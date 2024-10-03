@@ -16,28 +16,15 @@ const RoomList: React.FC = () => {
   const navigate = useNavigate();
 
   useEffect(() => {
-    const token = localStorage.getItem('token');
-    if (!token) {
-      navigate('/login');
-    } else {
-      fetchRooms();
-    }
+    fetchRooms();
   }, [navigate]);
 
   const fetchRooms = async () => {
-    const token = localStorage.getItem('token');
-    if (!token) {
-      setError('User not authenticated. Please log in.');
-      return;
-    }
-
     setLoading(true);
     setError(null);
 
     try {
-      const response = await axios.get('http://localhost:8000/rooms', {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
+      const response = await axios.get('http://localhost:8000/rooms');
       setRooms(response.data);
     } catch (err) {
       if (axios.isAxiosError(err)) {
@@ -52,37 +39,20 @@ const RoomList: React.FC = () => {
   };
 
   const handleCreateRoom = async () => {
-    const token = localStorage.getItem('token');
-    if (!token) {
-      setError('User not authenticated. Please log in.');
-      return;
-    }
-  
     setLoading(true);
     setError(null);
-  
+
     try {
-      const response = await axios.post(
-        'http://localhost:8000/rooms',
-        {
-          name: newRoomName,
-          is_public: true
-        },
-        {
-          headers: { 'Authorization': `Bearer ${token}` }
-        }
-      );
+      const response = await axios.post('http://localhost:8000/rooms', {
+        name: newRoomName,
+        is_public: true
+      });
       setNewRoomName(''); // Clear input
       fetchRooms(); // Refresh the room list
     } catch (err) {
       if (axios.isAxiosError(err)) {
         console.error('Error creating room:', err.response?.data);
-        if (err.response?.status === 401) {
-          setError('Authentication failed. Please log in again.');
-          // Optionally, redirect to login page here
-        } else {
-          setError(`Failed to create room: ${err.response?.data.detail || 'Unknown error'}`);
-        }
+        setError(`Failed to create room: ${err.response?.data.detail || 'Unknown error'}`);
       } else {
         console.error('Unexpected error:', err);
         setError('Failed to create room. Please try again later.');
@@ -114,7 +84,7 @@ const RoomList: React.FC = () => {
       {!loading && (
         <>
           <List>
-            {rooms.map(room => (
+            {rooms.map((room) => (
               <ListItem key={room.id} disablePadding>
                 <ListItemButton onClick={() => handleJoinRoom(room.name)}>
                   <ListItemText primary={room.name} />

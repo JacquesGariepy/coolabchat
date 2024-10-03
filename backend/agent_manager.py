@@ -1,4 +1,3 @@
-# backend/agent_manager.py
 import json
 import re
 from typing import List, Dict
@@ -12,14 +11,19 @@ class AgentManager:
         self.active_connections: Dict[str, List[WebSocket]] = {}  # room_name -> List[WebSocket]
         self.chatgpt = ChatGPT()
 
-    async def connect(self, websocket: WebSocket, room_name: str, user):
+    async def connect(self, websocket: WebSocket, room_name: str):
         await websocket.accept()
         if room_name not in self.active_connections:
             self.active_connections[room_name] = []
         self.active_connections[room_name].append(websocket)
+        print(f"Connected to room {room_name}")
 
     def disconnect(self, websocket: WebSocket, room_name: str):
-        self.active_connections[room_name].remove(websocket)
+        if room_name in self.active_connections:
+            self.active_connections[room_name].remove(websocket)
+            if not self.active_connections[room_name]:  # Clean up if no connections remain
+                del self.active_connections[room_name]
+        print(f"Disconnected from room {room_name}")
 
     async def broadcast(self, message: str, room_name: str, username: str):
         data = {"message": message, "username": username}
@@ -47,13 +51,13 @@ class AgentManager:
             response = await self.chatgpt.generate_response(question, command)
             await self.broadcast(response, room_name, f"AI_{command.capitalize()}")
         else:
-            # Rechercher les mentions d'agents
+            # Look for agent mentions
             for word in message.split():
                 if word.startswith("@"):
                     agent_name = word[1:]
                     agent = db.query(Agent).filter(Agent.name == agent_name).first()
                     if not agent:
-                        # Auto-générer l'agent si non existant
+                        # Auto-generate the agent if not existing
                         self.auto_generate_agent(agent_name)
                         agent = db.query(Agent).filter(Agent.name == agent_name).first()
 
@@ -63,12 +67,12 @@ class AgentManager:
 
     def auto_generate_agent(self, trigger_word: str):
         db = SessionLocal()
-        # Vérifier si un agent avec le nom du trigger existe déjà
+        # Check if an agent with the trigger name already exists
         existing_agent = db.query(Agent).filter(Agent.name == trigger_word).first()
         if not existing_agent:
             new_agent = Agent(
                 name=trigger_word,
-                personality="Généré automatiquement",
+                personality="Automatically generated",
                 context="",
                 is_active=True
             )

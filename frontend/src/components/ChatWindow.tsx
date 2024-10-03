@@ -1,16 +1,12 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
-import axios from 'axios';
-import { useNavigate, useParams } from 'react-router-dom';
-import { Container, Paper, Alert, Snackbar } from '@mui/material';
+import { useParams } from 'react-router-dom';
+import { Container, Paper, Snackbar, Alert } from '@mui/material';
 import styled from 'styled-components';
 import Navbar from './Navbar';
 import Sidebar from './Sidebar';
-import ModeratorPanel from './ModeratorPanel';
 import MessageBubble from './MessageBubble';
 import TypingIndicator from './TypingIndicator';
 import MessageInput from './MessageInput';
-
-const ENDPOINT = 'http://localhost:8000';
 
 const ChatContainer = styled(Paper)`
   flex: 1;
@@ -33,176 +29,117 @@ interface Message {
   message: string;
   username: string;
   reactions: { [key: string]: string[] };
-  partial?: boolean;
 }
 
 const ChatWindow: React.FC = () => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [typingUsers, setTypingUsers] = useState<Set<string>>(new Set());
-  const [activeAgents, setActiveAgents] = useState([]);
-  const [activeCommands, setActiveCommands] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
-  const navigate = useNavigate();
   const { roomName } = useParams<{ roomName: string }>();
-  const username = localStorage.getItem('username') || '';
-  const isModerator = localStorage.getItem('isModerator') === 'true';
+  const username = localStorage.getItem('username') || `User_${Math.floor(Math.random() * 1000)}`;
 
-  const isTokenExpired = (token: string | null) => {
-    if (!token) return true;
-    try {
-      const { exp } = JSON.parse(atob(token.split('.')[1]));
-      return Date.now() >= exp * 1000;
-    } catch {
-      return true;
-    }
-  };
+  const connectWebSocket = useCallback(() => {
+    if (!roomName) return;
 
-  const refreshAccessToken = async () => {
-    try {
-      const refreshToken = localStorage.getItem('refresh_token');
-      if (!refreshToken) {
-        throw new Error('No refresh token available');
-      }
-
-      const response = await axios.post(`${ENDPOINT}/token/refresh`, {
-        refresh_token: refreshToken,
-      }, {
-        headers: { 'Content-Type': 'application/json' }
-      });
-
-      const newAccessToken = response.data.access_token;
-      localStorage.setItem('token', newAccessToken);
-      return newAccessToken;
-    } catch (error) {
-      console.error('Error refreshing token:', error);
-      navigate('/login');  // Redirect to login if unable to refresh the token
-    }
-  };
-
-  const connectWebSocket = useCallback(async (attempt = 0) => {
-    if (attempt > 5) {
-      setError("Unable to reconnect after multiple attempts. Please refresh the page.");
-      return;
-    }
-  
-    let token = localStorage.getItem('token');
-    let validToken = token;
-  
-    if (isTokenExpired(token)) {
-      validToken = await refreshAccessToken();
-    }
-    if (!validToken) {
-      console.error('Failed to refresh token.');
-      return;
-    }
-    
-  
-    const socket = new WebSocket(`${ENDPOINT}/ws/${roomName}?token=${validToken}`);
+    const socket = new WebSocket(`ws://localhost:8000/ws/${roomName}`);
     socketRef.current = socket;
-  
+
     socket.onopen = () => {
       console.log('WebSocket connection established');
+      setError(null);
     };
-  
+
     socket.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      // Handle messages
-    };
-  
-    socket.onclose = async (event) => {
-      console.log('WebSocket connection closed:', event);
-      if (event.code !== 1000) { // Not a normal closure
-        setError('WebSocket connection lost. Attempting to reconnect...');
-        setTimeout(() => connectWebSocket(attempt + 1), Math.min(10000, 1000 * (2 ** attempt)));
+      try {
+        const data = JSON.parse(event.data);
+        console.log('Received message:', data); // Log received message for debugging
+        if (data.event === 'typing') {
+          setTypingUsers((prev) => new Set(prev.add(data.username)));
+          setTimeout(() => {
+            setTypingUsers((prev) => {
+              const newSet = new Set(prev);
+              newSet.delete(data.username);
+              return newSet;
+            });
+          }, 3000);
+        } else if (data.event === 'message' && data.message && data.username) {
+          setMessages((prevMessages) => {
+            // Check if the message already exists to prevent duplicates
+            if (!prevMessages.some(msg => msg.id === data.id)) {
+              return [
+                ...prevMessages,
+                { id: data.id || `${Date.now()}`, message: data.message, username: data.username, reactions: {} },
+              ];
+            }
+            return prevMessages;
+          });
+        }
+      } catch (err) {
+        console.error('Error parsing WebSocket message:', err);
+        console.log('Received data:', event.data);
+        setError('Error parsing message from server. Please try again.');
       }
     };
-  
+
+    socket.onclose = (event) => {
+      console.log('WebSocket connection closed:', event);
+      if (event.code !== 1000) {
+        setError('WebSocket connection lost. Attempting to reconnect...');
+        setTimeout(connectWebSocket, 3000);
+      }
+    };
+
     socket.onerror = (error) => {
       console.error('WebSocket error:', error);
       setError('Error in WebSocket connection');
     };
   }, [roomName]);
-  
 
   useEffect(() => {
-    (async () => {
-      try {
-        let token = localStorage.getItem('token');
-        if (isTokenExpired(token)) {
-          token = await refreshAccessToken();
-        }
-
-        if (!token) {
-          navigate('/login');
-          return;
-        }
-
-        await axios.get(`${ENDPOINT}/users/me`, {
-          headers: { 'Authorization': `Bearer ${token}` }
-        }).then(response => {
-          localStorage.setItem('username', response.data.username);
-          localStorage.setItem('isModerator', response.data.is_moderator.toString());
-        }).catch(() => {
-          navigate('/login');
-        });
-
-        if (roomName) {
-          await axios.get(`${ENDPOINT}/rooms/${roomName}`, {
-            headers: { 'Authorization': `Bearer ${token}` }
-          }).then(response => {
-            setActiveAgents(response.data.agents || []);
-            setActiveCommands(response.data.active_commands || []);
-          }).catch(() => {
-            setError('Failed to load room data.');
-          });
-        }
-
-        connectWebSocket();
-      } catch (error) {
-        console.error('Unexpected error:', error);
-      }
-    })();
-
+    connectWebSocket();
     return () => {
       if (socketRef.current) {
-        socketRef.current.close();
+        socketRef.current.close(1000); // Normal closure
       }
     };
-  }, [connectWebSocket, navigate, roomName]);
+  }, [connectWebSocket]);
+
+  const handleSendMessage = (message: string) => {
+    if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+      const payload = JSON.stringify({ event: 'message', message, username });
+      socketRef.current.send(payload);
+    }
+  };
 
   const handleTyping = () => {
-    if (socketRef.current) {
-      socketRef.current.send(JSON.stringify({ type: 'typing', isTyping: true }));
+    if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+      socketRef.current.send(JSON.stringify({ event: 'typing', username }));
     }
   };
 
   const handleReaction = (messageId: string, reaction: string) => {
-    // Reaction handling logic here
-  };
-
-  const toggleAgent = (agentId: number, isActive: boolean) => {
-    // Toggle agent logic here
-  };
-
-  const toggleCommand = (command: string, isActive: boolean) => {
-    // Toggle command logic here
+    setMessages((prevMessages) =>
+      prevMessages.map((msg) =>
+        msg.id === messageId
+          ? {
+              ...msg,
+              reactions: {
+                ...msg.reactions,
+                [reaction]: [...(msg.reactions[reaction] || []), username],
+              },
+            }
+          : msg
+      )
+    );
   };
 
   return (
     <Container maxWidth="xl" disableGutters>
       <Navbar roomName={roomName || ""} />
       <div style={{ display: 'flex', height: 'calc(100vh - 64px)' }}>
-      <Sidebar username={username} />
+        <Sidebar username={username} />
         <ChatContainer elevation={3}>
-          {isModerator && (
-            <ModeratorPanel
-              agents={activeAgents}
-              commands={activeCommands}
-              onToggleAgent={toggleAgent}
-              onToggleCommand={toggleCommand}
-            />
-          )}
           <MessageContainer>
             {messages.map((msg) => (
               <MessageBubble
@@ -210,9 +147,9 @@ const ChatWindow: React.FC = () => {
                 message={msg.message}
                 username={msg.username}
                 isOwnMessage={msg.username === username}
-                isAgent={msg.username !== username && msg.username.startsWith('Agent')}
+                isAgent={msg.username.startsWith('Agent')}
                 reactions={msg.reactions}
-                onReaction={(reaction) => handleReaction(msg.id, reaction)}
+                onReaction={(reaction: string) => handleReaction(msg.id, reaction)}
               />
             ))}
             {Array.from(typingUsers).map((user) => (
@@ -220,13 +157,9 @@ const ChatWindow: React.FC = () => {
             ))}
           </MessageContainer>
           <MessageInput
-            sendMessage={(message) => {
-              if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
-                socketRef.current.send(JSON.stringify({ type: 'message', message }));
-              }
-            }}
+            sendMessage={handleSendMessage}
             onTyping={handleTyping}
-            activeCommands={activeCommands}
+            activeCommands={[]} // Commandes non utilisées pour le moment
           />
         </ChatContainer>
       </div>
@@ -242,4 +175,3 @@ const ChatWindow: React.FC = () => {
 };
 
 export default ChatWindow;
-

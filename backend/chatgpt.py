@@ -1,30 +1,31 @@
-# backend/chatgpt.py
 import os
-import openai
+from openai import OpenAI
 from dotenv import load_dotenv
-from sqlalchemy.orm import Session
-from database import SessionLocal
-from models import Agent
 
 load_dotenv()
-openai.api_key = os.getenv("OPENAI_API_KEY")
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 class ChatGPT:
     def __init__(self):
-        self.model = "gpt-4"
+        self.model = "gpt-4"  # ou le modèle que vous souhaitez utiliser
 
-    def get_agent_prompt(self, agent_name: str) -> str:
-        db = SessionLocal()
-        agent = db.query(Agent).filter(Agent.name == agent_name).first()
-        db.close()
-        if agent:
-            return f"You are {agent_name}. Personality: {agent.personality}. Context: {agent.context}"
-        return f"You are {agent_name}, an AI assistant."
+    async def generate_response(self, message: str, command: str = None):
+        system_prompt = self.get_command_prompt(command) if command else "You are a helpful AI assistant."
+        
+        response = client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": message}
+            ],
+            temperature=0.7,
+        )
+        return response.choices[0].message.content
 
     async def stream_response(self, message: str, agent_name: str, manager, room_name: str):
-        system_prompt = self.get_agent_prompt(agent_name)
+        system_prompt = f"You are {agent_name}, an AI assistant."
         
-        response = openai.ChatCompletion.create(
+        stream = client.chat.completions.create(
             model=self.model,
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -35,27 +36,12 @@ class ChatGPT:
         )
 
         partial_message = ""
-        for chunk in response:
-            if "choices" in chunk:
-                delta = chunk["choices"][0]["delta"]
-                content = delta.get("content", "")
-                partial_message += content
+        for chunk in stream:
+            if chunk.choices[0].delta.content is not None:
+                partial_message += chunk.choices[0].delta.content
                 await manager.broadcast_partial(
                     partial_message, room_name, agent_name
                 )
-
-    async def generate_response(self, message: str, command: str = None):
-        system_prompt = self.get_command_prompt(command) if command else "You are a helpful AI assistant."
-        
-        response = openai.ChatCompletion.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": message}
-            ],
-            temperature=0.7,
-        )
-        return response.choices[0].message['content']
 
     def get_command_prompt(self, command: str) -> str:
         command_prompts = {

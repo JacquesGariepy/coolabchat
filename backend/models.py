@@ -60,3 +60,5 @@ class RoomCommand(Base):
     is_active = Column(Boolean, default=True)
 
     room = relationship("Room", back_populates="commands")
+
+    
