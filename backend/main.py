@@ -1,8 +1,17 @@
 import json
 import asyncio
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from typing import List
+from typing import List, AsyncGenerator
+import os
+from dotenv import load_dotenv
+from openai import AsyncOpenAI
+
+from chatgpt import get_ai_response
+
+load_dotenv()
+
+client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 app = FastAPI()
 
@@ -12,7 +21,6 @@ origins = [
     "http://127.0.0.1:3000",
     "http://localhost:8000",
     "http://127.0.0.1:8000",
-    # Ajoutez ici d'autres origines si nécessaire
 ]
 
 app.add_middleware(
@@ -41,6 +49,16 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
+async def get_complete_ai_response(message: str) -> str:
+    """
+    Collecte la réponse complète de get_ai_response.
+    """
+    response = ""
+    async for chunk in get_ai_response(message):
+        response = chunk  # On récupère uniquement le contenu final à chaque itération, accumulé dans `get_ai_response`.
+    return response
+
+
 @app.websocket("/ws/{username}")
 async def websocket_endpoint(websocket: WebSocket, username: str):
     await manager.connect(websocket)
@@ -50,18 +68,36 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
             try:
                 message_data = json.loads(data)
                 print(f"Received message from {username}: {message_data}")  # Log pour le débogage
+
                 if 'event' in message_data and message_data['event'] == 'typing':
                     await manager.broadcast({
                         'event': 'typing',
                         'username': username
                     })
                 elif 'event' in message_data and message_data['event'] == 'message':
-                    await manager.broadcast({
-                        'event': 'message',
-                        'id': f"{username}_{asyncio.get_event_loop().time()}",  # Génère un ID unique
-                        'username': username,
-                        'message': message_data.get('message', '')
-                    })
+                    user_message = message_data.get('message', '')
+
+                    # Vérifie si "iaask" est dans le message
+                    if "iaask" in user_message.lower():
+                        # Demande à ChatGPT de générer une réponse sans bloquer l'événement
+
+                        response = await get_complete_ai_response(user_message)
+
+                        # Envoi du message complet après réception de la réponse entière
+                        await manager.broadcast({
+                            'event': 'message',
+                            'id': f"{username}_{asyncio.get_event_loop().time()}",  # Génère un ID unique
+                            'username': 'ChatGPT',
+                            'message': response
+                        })
+                    else:
+                        # Envoi du message standard si "iaask" n'est pas présent
+                        await manager.broadcast({
+                            'event': 'message',
+                            'id': f"{username}_{asyncio.get_event_loop().time()}",  # Génère un ID unique
+                            'username': username,
+                            'message': user_message
+                        })
             except json.JSONDecodeError:
                 print(f"Received invalid JSON from {username}: {data}")  # Log pour le débogage
                 # Fallback pour les messages en texte brut

@@ -3,7 +3,7 @@ import styled from 'styled-components';
 import { Popover, IconButton, Typography, Badge } from '@mui/material';
 import EmojiEmotionsIcon from '@mui/icons-material/EmojiEmotions';
 
-const Bubble = styled.div<{ isOwnMessage: boolean; isAgent: boolean }>`
+const Bubble = styled.div<{ isOwnMessage: boolean; isAgent: boolean; partial?: boolean }>`
   max-width: 60%;
   margin-bottom: 10px;
   padding: 10px;
@@ -12,6 +12,7 @@ const Bubble = styled.div<{ isOwnMessage: boolean; isAgent: boolean }>`
     isOwnMessage ? '#2f80ed' : isAgent ? '#FFD700' : '#e0e0e0'};
   color: ${({ isOwnMessage }) => (isOwnMessage ? '#fff' : '#000')};
   align-self: ${({ isOwnMessage }) => (isOwnMessage ? 'flex-end' : 'flex-start')};
+  opacity: ${({ partial }) => partial ? 0.7 : 1};
 `;
 
 const Username = styled(Typography)`
@@ -32,6 +33,7 @@ interface MessageBubbleProps {
   isAgent: boolean;
   reactions: { [key: string]: string[] };
   onReaction: (reaction: string) => void;
+  partial?: boolean;
 }
 
 const availableReactions = ['👍', '❤️', '😂', '😮', '😢', '😡'];
@@ -43,6 +45,7 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({
   isAgent,
   reactions,
   onReaction,
+  partial,
 }) => {
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
 
@@ -60,21 +63,23 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({
   };
 
   return (
-    <Bubble isOwnMessage={isOwnMessage} isAgent={isAgent}>
+    <Bubble isOwnMessage={isOwnMessage} isAgent={isAgent} partial={partial}>
       {!isOwnMessage && <Username variant="subtitle2">{isAgent ? `🤖 ${username}` : username}</Username>}
       <Typography variant="body1">{message}</Typography>
-      <ReactionContainer>
-        {Object.entries(reactions).map(([reaction, users]) => (
-          <Badge key={reaction} badgeContent={users.length} color="primary" sx={{ margin: '0 2px' }}>
-            <IconButton size="small" onClick={() => handleAddReaction(reaction)}>
-              <span style={{ fontSize: '16px' }}>{reaction}</span>
-            </IconButton>
-          </Badge>
-        ))}
-        <IconButton size="small" onClick={handleOpenReactions}>
-          <EmojiEmotionsIcon fontSize="small" />
-        </IconButton>
-      </ReactionContainer>
+      {!partial && (
+        <ReactionContainer>
+          {Object.entries(reactions).map(([reaction, users]) => (
+            <Badge key={reaction} badgeContent={users.length} color="primary" sx={{ margin: '0 2px' }}>
+              <IconButton size="small" onClick={() => handleAddReaction(reaction)}>
+                <span style={{ fontSize: '16px' }}>{reaction}</span>
+              </IconButton>
+            </Badge>
+          ))}
+          <IconButton size="small" onClick={handleOpenReactions}>
+            <EmojiEmotionsIcon fontSize="small" />
+          </IconButton>
+        </ReactionContainer>
+      )}
       <Popover
         open={Boolean(anchorEl)}
         anchorEl={anchorEl}
