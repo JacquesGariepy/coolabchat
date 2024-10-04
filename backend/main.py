@@ -6,9 +6,12 @@ from typing import Dict, List
 import os
 from dotenv import load_dotenv
 import openai
+import litellm  # Added import for LiteLLM
 from datetime import datetime
 
 load_dotenv()
+
+litellm_client = litellm.Client(api_key=os.getenv("LITELLM_API_KEY"))  # Initialize LiteLLM client
 
 app = FastAPI()
 
@@ -64,12 +67,15 @@ class GlobalAgent:
             system_message = f"You are a {self.role} named {self.name}. Respond based on your role and the conversation context."
             messages = [{"role": "system", "content": system_message}] + self.memory
 
-            async with openai.AsyncOpenAI(api_key=self.api_key) as client:
-                response = await client.chat.completions.create(
-                    model="gpt-3.5-turbo",
-                    messages=messages,
-                    temperature=0.7,
-                )
+            response = litellm_client.complete(
+                model="o1-mini",
+                messages=messages,
+                temperature=0.7,
+                max_tokens=1500,
+                top_p=1,
+                frequency_penalty=0,
+                presence_penalty=0,
+            )
             return response.choices[0].message.content
         except Exception as e:
             print(f"Error generating reply: {e}")
