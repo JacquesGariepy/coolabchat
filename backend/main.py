@@ -2,20 +2,17 @@ import json
 import asyncio
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from typing import List, AsyncGenerator
+from typing import Dict, List
 import os
 from dotenv import load_dotenv
-from openai import AsyncOpenAI
-
-from chatgpt import get_ai_response
+import openai
+from datetime import datetime
 
 load_dotenv()
 
-client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
 app = FastAPI()
 
-# Configuration CORS plus permissive
+# Configuration CORS (inchangée)
 origins = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
@@ -31,6 +28,81 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+class GlobalAgent:
+    def __init__(self, name: str, role: str, api_key: str):
+        self.name = name
+        self.role = role
+        self.api_key = api_key
+        self.memory = []
+
+    async def process_message(self, message: Dict[str, str]) -> str:
+        self.memory.append(message)
+        
+        # Limiter la mémoire à 20 messages pour conserver plus de contexte
+        if len(self.memory) > 20:
+            self.memory = self.memory[-20:]
+
+        # Décider si l'agent doit répondre
+        if self.should_respond(message['content']):
+            return await self.generate_reply()
+        return ""
+
+    def should_respond(self, message_content: str) -> bool:
+        # Logique simple : répondre si le message contient le nom de l'agent ou des mots-clés liés à son rôle
+        return self.name.lower() in message_content.lower() or any(keyword in message_content.lower() for keyword in self.get_role_keywords())
+
+    def get_role_keywords(self) -> List[str]:
+        if self.role == "technical expert":
+            return ["bug", "error", "problem", "how to", "help with"]
+        elif self.role == "chat moderator":
+            return ["rules", "inappropriate", "language", "behavior", "warning"]
+        else:  # helpful assistant
+            return ["question", "can you", "what is", "how do"]
+
+    async def generate_reply(self) -> str:
+        try:
+            system_message = f"You are a {self.role} named {self.name}. Respond based on your role and the conversation context."
+            messages = [{"role": "system", "content": system_message}] + self.memory
+
+            async with openai.AsyncOpenAI(api_key=self.api_key) as client:
+                response = await client.chat.completions.create(
+                    model="gpt-3.5-turbo",
+                    messages=messages,
+                    temperature=0.7,
+                )
+            return response.choices[0].message.content
+        except Exception as e:
+            print(f"Error generating reply: {e}")
+            return f"Error: {str(e)}"
+
+class GlobalAgentManager:
+    def __init__(self):
+        self.agents = []
+        self.initialize_agents()
+
+    def initialize_agents(self):
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise ValueError("OPENAI_API_KEY is not set in the environment variables.")
+        
+        print(f"OpenAI API Key: {api_key[:5]}...{api_key[-5:]}")  # Log a masked version of the API key
+
+        self.agents = [
+            GlobalAgent("TechExpert", "technical expert", api_key),
+            GlobalAgent("ChatMod", "chat moderator", api_key),
+            GlobalAgent("HelperBot", "helpful assistant", api_key)
+        ]
+
+    async def process_message(self, message: Dict[str, str]) -> List[str]:
+        responses = []
+        for agent in self.agents:
+            response = await agent.process_message(message)
+            if response:
+                responses.append((agent.name, response))
+        return responses
+
+agent_manager = GlobalAgentManager()
+
 class ConnectionManager:
     def __init__(self):
         self.active_connections: List[WebSocket] = []
@@ -40,34 +112,32 @@ class ConnectionManager:
         self.active_connections.append(websocket)
 
     def disconnect(self, websocket: WebSocket):
-        self.active_connections.remove(websocket)
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
 
     async def broadcast(self, message: dict):
-        print(f"Broadcasting message: {message}")  # Log pour le débogage
-        for connection in self.active_connections:
-            await connection.send_json(message)
+        print(f"Broadcasting message: {message}")  # Log for debugging
+        for connection in self.active_connections.copy():
+            try:
+                await connection.send_json(message)
+            except WebSocketDisconnect:
+                self.disconnect(connection)
+            except Exception as e:
+                print(f"Failed to send message to connection: {e}")
+                self.disconnect(connection)
 
 manager = ConnectionManager()
-
-async def get_complete_ai_response(message: str) -> str:
-    """
-    Collecte la réponse complète de get_ai_response.
-    """
-    response = ""
-    async for chunk in get_ai_response(message):
-        response = chunk  # On récupère uniquement le contenu final à chaque itération, accumulé dans `get_ai_response`.
-    return response
-
 
 @app.websocket("/ws/{username}")
 async def websocket_endpoint(websocket: WebSocket, username: str):
     await manager.connect(websocket)
+
     try:
         while True:
             data = await websocket.receive_text()
             try:
                 message_data = json.loads(data)
-                print(f"Received message from {username}: {message_data}")  # Log pour le débogage
+                print(f"Received message from {username}: {message_data}")  # Log for debugging
 
                 if 'event' in message_data and message_data['event'] == 'typing':
                     await manager.broadcast({
@@ -77,33 +147,37 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
                 elif 'event' in message_data and message_data['event'] == 'message':
                     user_message = message_data.get('message', '')
 
-                    # Vérifie si "iaask" est dans le message
-                    if "iaask" in user_message.lower():
-                        # Demande à ChatGPT de générer une réponse sans bloquer l'événement
+                    # Format the message
+                    formatted_message = {
+                        "role": "user",
+                        "content": f"{username}: {user_message}"
+                    }
 
-                        response = await get_complete_ai_response(user_message)
+                    # Broadcast the user's message
+                    await manager.broadcast({
+                        'event': 'message',
+                        'id': f"{username}_{asyncio.get_event_loop().time()}",
+                        'username': username,
+                        'message': user_message
+                    })
 
-                        # Envoi du message complet après réception de la réponse entière
+                    # Process the message and get the agents' responses
+                    agent_responses = await agent_manager.process_message(formatted_message)
+
+                    # Broadcast each agent's response
+                    for agent_name, response in agent_responses:
                         await manager.broadcast({
                             'event': 'message',
-                            'id': f"{username}_{asyncio.get_event_loop().time()}",  # Génère un ID unique
-                            'username': 'ChatGPT',
+                            'id': f"{agent_name}_{asyncio.get_event_loop().time()}",
+                            'username': agent_name,
                             'message': response
                         })
-                    else:
-                        # Envoi du message standard si "iaask" n'est pas présent
-                        await manager.broadcast({
-                            'event': 'message',
-                            'id': f"{username}_{asyncio.get_event_loop().time()}",  # Génère un ID unique
-                            'username': username,
-                            'message': user_message
-                        })
+
             except json.JSONDecodeError:
-                print(f"Received invalid JSON from {username}: {data}")  # Log pour le débogage
-                # Fallback pour les messages en texte brut
+                print(f"Received invalid JSON from {username}: {data}")  # Log for debugging
                 await manager.broadcast({
                     'event': 'message',
-                    'id': f"{username}_{asyncio.get_event_loop().time()}",  # Génère un ID unique
+                    'id': f"{username}_{asyncio.get_event_loop().time()}",
                     'username': username,
                     'message': data
                 })
@@ -111,7 +185,192 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
         manager.disconnect(websocket)
         await manager.broadcast({
             'event': 'message',
-            'id': f"system_{asyncio.get_event_loop().time()}",  # Génère un ID unique
+            'id': f"system_{asyncio.get_event_loop().time()}",
+            'username': 'System',
+            'message': f"{username} has left the chat."
+        })
+
+@app.websocket("/ws/{username}")
+async def websocket_endpoint(websocket: WebSocket, username: str):
+    await manager.connect(websocket)
+    agent = agent_manager.get_or_create_agent(username)
+
+    try:
+        while True:
+            data = await websocket.receive_text()
+            try:
+                message_data = json.loads(data)
+                print(f"Received message from {username}: {message_data}")  # Log for debugging
+
+                if 'event' in message_data and message_data['event'] == 'typing':
+                    await manager.broadcast({
+                        'event': 'typing',
+                        'username': username
+                    })
+                elif 'event' in message_data and message_data['event'] == 'message':
+                    user_message = message_data.get('message', '')
+
+                    # Format the message
+                    formatted_message = {
+                        "role": "user",
+                        "content": user_message
+                    }
+
+                    # Process the message and get the agent's response
+                    agent_response = await agent.process_message(formatted_message)
+
+                    # Broadcast the user's message
+                    await manager.broadcast({
+                        'event': 'message',
+                        'id': f"{username}_{asyncio.get_event_loop().time()}",
+                        'username': username,
+                        'message': user_message
+                    })
+
+                    # Broadcast the agent's response
+                    await manager.broadcast({
+                        'event': 'message',
+                        'id': f"{agent.name}_{asyncio.get_event_loop().time()}",
+                        'username': agent.name,
+                        'message': agent_response
+                    })
+
+            except json.JSONDecodeError:
+                print(f"Received invalid JSON from {username}: {data}")  # Log for debugging
+                await manager.broadcast({
+                    'event': 'message',
+                    'id': f"{username}_{asyncio.get_event_loop().time()}",
+                    'username': username,
+                    'message': data
+                })
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+        await manager.broadcast({
+            'event': 'message',
+            'id': f"system_{asyncio.get_event_loop().time()}",
+            'username': 'System',
+            'message': f"{username} has left the chat."
+        })
+
+@app.websocket("/ws/{username}")
+async def websocket_endpoint(websocket: WebSocket, username: str):
+    await manager.connect(websocket)
+    agent = agent_manager.get_or_create_agent(username)
+
+    try:
+        while True:
+            data = await websocket.receive_text()
+            try:
+                message_data = json.loads(data)
+                print(f"Received message from {username}: {message_data}")  # Log for debugging
+
+                if 'event' in message_data and message_data['event'] == 'typing':
+                    await manager.broadcast({
+                        'event': 'typing',
+                        'username': username
+                    })
+                elif 'event' in message_data and message_data['event'] == 'message':
+                    user_message = message_data.get('message', '')
+
+                    # Format the message
+                    formatted_message = {
+                        "role": "user",
+                        "content": user_message
+                    }
+
+                    # Process the message and get the agent's response
+                    agent_response = await agent.process_message(formatted_message)
+
+                    # Broadcast the user's message
+                    await manager.broadcast({
+                        'event': 'message',
+                        'id': f"{username}_{asyncio.get_event_loop().time()}",
+                        'username': username,
+                        'message': user_message
+                    })
+
+                    # If the agent decided to respond, broadcast its response
+                    if agent_response:
+                        await manager.broadcast({
+                            'event': 'message',
+                            'id': f"{agent.name}_{asyncio.get_event_loop().time()}",
+                            'username': agent.name,
+                            'message': agent_response
+                        })
+
+            except json.JSONDecodeError:
+                print(f"Received invalid JSON from {username}: {data}")  # Log for debugging
+                await manager.broadcast({
+                    'event': 'message',
+                    'id': f"{username}_{asyncio.get_event_loop().time()}",
+                    'username': username,
+                    'message': data
+                })
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+        await manager.broadcast({
+            'event': 'message',
+            'id': f"system_{asyncio.get_event_loop().time()}",
+            'username': 'System',
+            'message': f"{username} has left the chat."
+        })
+@app.websocket("/ws/{username}")
+async def websocket_endpoint(websocket: WebSocket, username: str):
+    await manager.connect(websocket)
+    agent = agent_manager.get_or_create_agent(username)
+
+    try:
+        while True:
+            data = await websocket.receive_text()
+            try:
+                message_data = json.loads(data)
+                print(f"Received message from {username}: {message_data}")  # Log for debugging
+
+                if 'event' in message_data and message_data['event'] == 'typing':
+                    await manager.broadcast({
+                        'event': 'typing',
+                        'username': username
+                    })
+                elif 'event' in message_data and message_data['event'] == 'message':
+                    user_message = message_data.get('message', '')
+
+                    # Format the message as expected by generate_reply
+                    formatted_message = {
+                        "role": "user",
+                        "content": user_message
+                    }
+
+                    print(f"Sending message to agent: {formatted_message}")  # Log the message being sent to the agent
+
+                    # Use the agent to generate a response
+                    try:
+                        agent_response = await agent.generate_reply([formatted_message])
+                        print(f"Raw agent response: {agent_response}")  # Log the raw response from the agent
+                    except Exception as e:
+                        print(f"Error generating reply: {e}")
+                        agent_response = f"Error: {str(e)}"
+
+                    print(f"Processed agent response: {agent_response}")  # Log the processed agent's response
+
+                    await manager.broadcast({
+                        'event': 'message',
+                        'id': f"{username}_{asyncio.get_event_loop().time()}",  # Generate a unique ID
+                        'username': f"{agent.name}",
+                        'message': agent_response
+                    })
+            except json.JSONDecodeError:
+                print(f"Received invalid JSON from {username}: {data}")  # Log for debugging
+                await manager.broadcast({
+                    'event': 'message',
+                    'id': f"{username}_{asyncio.get_event_loop().time()}",  # Generate a unique ID
+                    'username': username,
+                    'message': data
+                })
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+        await manager.broadcast({
+            'event': 'message',
+            'id': f"system_{asyncio.get_event_loop().time()}",  # Generate a unique ID
             'username': 'System',
             'message': f"{username} has left the chat."
         })
@@ -125,3 +384,7 @@ async def root():
 @app.options("/ws/{username}")
 async def websocket_cors(username: str):
     return {}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)

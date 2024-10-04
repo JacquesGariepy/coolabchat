@@ -12,7 +12,7 @@ async def get_ai_response(message: str) -> AsyncGenerator[str, None]:
     OpenAI Response
     """
     response = await client.chat.completions.create(
-        model="gpt-3.5-turbo",
+        model="gpt-4o-mini",
         messages=[
             {
                 "role": "system",

@@ -12,7 +12,7 @@ const Bubble = styled.div<{ isOwnMessage: boolean; isAgent: boolean; partial?: b
     isOwnMessage ? '#2f80ed' : isAgent ? '#FFD700' : '#e0e0e0'};
   color: ${({ isOwnMessage }) => (isOwnMessage ? '#fff' : '#000')};
   align-self: ${({ isOwnMessage }) => (isOwnMessage ? 'flex-end' : 'flex-start')};
-  opacity: ${({ partial }) => partial ? 0.7 : 1};
+  opacity: ${({ partial }) => (partial ? 0.7 : 1)};
 `;
 
 const Username = styled(Typography)`
