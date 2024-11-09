@@ -10,6 +10,8 @@ from datetime import date, datetime
 
 load_dotenv()
 
+litellm_client = litellm.Client(api_key=os.getenv("LITELLM_API_KEY"))  # Initialize LiteLLM client
+
 app = FastAPI()
 
 # Configuration CORS (inchangée)
